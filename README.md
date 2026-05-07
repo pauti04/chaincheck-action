@@ -80,8 +80,12 @@ jobs:
     post-comment: 'true'
 ```
 
-**Check commit messages:**
+**Check commit messages** (requires `actions/checkout` first):
 ```yaml
+- uses: actions/checkout@v4   # required for commit-messages mode
+  with:
+    fetch-depth: 10
+
 - uses: pauti04/chaincheck-action@v1
   with:
     openai-api-key: ${{ secrets.OPENAI_API_KEY }}

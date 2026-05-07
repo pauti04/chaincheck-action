@@ -4,11 +4,14 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir "chaincheck>=0.6.0"
+# Install from GitHub until v0.6.0 is published to PyPI
+# Switch to: pip install "chaincheck>=0.6.0" after `uv publish`
+RUN pip install --no-cache-dir "git+https://github.com/pauti04/chaincheck.git"
 
-# Pre-download NLI model so first run is fast
+# Pre-download NLI model at build time to avoid cold-start latency.
+# Skipped if network is unavailable (non-fatal).
 RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/nli-deberta-v3-base')" \
-    || true   # non-fatal: model downloads at runtime if this fails
+    || echo "Model pre-download skipped — will download at runtime"
 
 COPY entrypoint.py /entrypoint.py
 

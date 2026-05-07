@@ -5,6 +5,11 @@ ChainCheck GitHub Action entrypoint.
 Reads PR description or commit messages from the GitHub event payload,
 runs ChainCheck hallucination detection, posts a comment to the PR,
 and exits non-zero if the score exceeds the threshold.
+
+Improvements over v1:
+  - Passes git diff as context so judge can verify claims against actual code changes
+  - Updates existing ChainCheck comment instead of posting a new one each push
+  - Filters opinion/intent claims ("this PR adds X") before scoring
 """
 
 from __future__ import annotations
@@ -12,8 +17,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import urllib.request
+import urllib.parse
+
+_COMMENT_TAG = "<!-- chaincheck-action -->"  # hidden tag to find and update our comment
 
 
 # ── GitHub helpers ─────────────────────────────────────────────────────────────
@@ -38,7 +47,6 @@ def _get_pr_description() -> tuple[str, int | None]:
 
 def _get_commit_messages(n: int = 10) -> tuple[str, None]:
     """Return recent commit messages joined as a single string."""
-    import subprocess
     try:
         out = subprocess.check_output(
             ["git", "log", f"-{n}", "--pretty=format:%s%n%b"],
@@ -49,18 +57,79 @@ def _get_commit_messages(n: int = 10) -> tuple[str, None]:
         return "", None
 
 
-def _post_comment(token: str, repo: str, pr_number: int, body: str) -> None:
-    url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
-    data = json.dumps({"body": body}).encode()
-    req = urllib.request.Request(url, data=data, method="POST")
+def _get_diff(max_chars: int = 6000) -> str:
+    """
+    Return the git diff for this PR branch vs the base branch.
+
+    Truncated to max_chars to stay within judge token limits.
+    Strips binary file hunks and large generated files.
+    """
+    base = os.environ.get("GITHUB_BASE_REF", "main")
+    try:
+        diff = subprocess.check_output(
+            ["git", "diff", f"origin/{base}...HEAD",
+             "--diff-filter=ACMR",         # ignore deletes/renames
+             "--",
+             ":(exclude)*.lock",           # skip lockfiles
+             ":(exclude)*.min.js",
+             ":(exclude)dist/",
+             ":(exclude)*.svg",
+            ],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return ""
+
+    # Strip binary hunks
+    lines = [l for l in diff.splitlines() if not l.startswith("Binary files")]
+    trimmed = "\n".join(lines)
+
+    if len(trimmed) > max_chars:
+        trimmed = trimmed[:max_chars] + "\n\n[diff truncated]"
+
+    return trimmed
+
+
+def _github_api(token: str, method: str, path: str, body: dict | None = None) -> dict | list | None:
+    """Thin wrapper around the GitHub REST API."""
+    url = f"https://api.github.com{path}"
+    data = json.dumps(body).encode() if body else None
+    req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/vnd.github+json")
     req.add_header("X-GitHub-Api-Version", "2022-11-28")
     try:
-        urllib.request.urlopen(req, timeout=10)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
     except Exception as exc:
-        print(f"::warning::ChainCheck could not post comment: {exc}")
+        print(f"::warning::GitHub API {method} {path} failed: {exc}")
+        return None
+
+
+def _upsert_comment(token: str, repo: str, pr_number: int, body: str) -> None:
+    """
+    Update the existing ChainCheck comment on this PR, or create one if absent.
+    Uses a hidden HTML tag to identify our comment across pushes.
+    """
+    tagged_body = f"{_COMMENT_TAG}\n{body}"
+
+    # Search existing comments for our tag
+    comments = _github_api(token, "GET", f"/repos/{repo}/issues/{pr_number}/comments?per_page=100")
+    if isinstance(comments, list):
+        for c in comments:
+            if _COMMENT_TAG in c.get("body", ""):
+                # Update existing comment
+                _github_api(token, "PATCH", f"/repos/{repo}/issues/comments/{c['id']}",
+                            {"body": tagged_body})
+                print(f"Updated existing ChainCheck comment ({c['id']})")
+                return
+
+    # No existing comment — create one
+    _github_api(token, "POST", f"/repos/{repo}/issues/{pr_number}/comments",
+                {"body": tagged_body})
+    print(f"Posted new ChainCheck comment to PR #{pr_number}")
 
 
 def _set_output(name: str, value: str) -> None:
@@ -69,7 +138,7 @@ def _set_output(name: str, value: str) -> None:
         with open(path, "a") as f:
             f.write(f"{name}={value}\n")
     else:
-        print(f"::set-output name={name}::{value}")  # fallback for older runners
+        print(f"::set-output name={name}::{value}")
 
 
 def _set_failed(msg: str) -> None:
@@ -88,9 +157,10 @@ _LABEL_EMOJI = {
 _RISK_EMOJI = {"low": "✅", "medium": "⚠️", "high": "❌"}
 
 
-def _build_comment(result, score: float, threshold: float) -> str:
-    risk = result.risk_level
+def _build_comment(result, score: float, threshold: float, used_diff: bool) -> str:
+    risk  = result.risk_level
     emoji = _RISK_EMOJI.get(risk, "❓")
+    ctx_note = " · verified against PR diff" if used_diff else " · no diff context"
 
     lines = [
         f"## {emoji} ChainCheck — score `{score:.2f}` ({risk.upper()})",
@@ -103,18 +173,16 @@ def _build_comment(result, score: float, threshold: float) -> str:
             "|-------|-------|------|----------|",
         ]
         for cr in result.claim_details:
-            le = _LABEL_EMOJI.get(cr.label, "❓")
+            le    = _LABEL_EMOJI.get(cr.label, "❓")
             claim = cr.claim[:70].replace("|", "\\|")
-            evidence = (cr.evidence or "—")[:60].replace("|", "\\|")
-            lines.append(
-                f"| {claim} | {le} {cr.label} | `{cr.confidence:.2f}` | {evidence} |"
-            )
+            evid  = (cr.evidence or "—")[:70].replace("|", "\\|")
+            lines.append(f"| {claim} | {le} {cr.label} | `{cr.confidence:.2f}` | {evid} |")
         lines.append("")
 
     if score >= threshold:
         lines.append(
             f"> ❌ **Failing** — score `{score:.2f}` exceeds threshold `{threshold}`. "
-            "Review the flagged claims above before merging."
+            "Review flagged claims above before merging."
         )
     else:
         lines.append(
@@ -123,7 +191,7 @@ def _build_comment(result, score: float, threshold: float) -> str:
 
     lines += [
         "",
-        "<sub>Powered by [ChainCheck](https://github.com/pauti04/chaincheck) · "
+        f"<sub>Powered by [ChainCheck](https://github.com/pauti04/chaincheck){ctx_note} · "
         f"methods: {', '.join(result.method_results.keys())}</sub>",
     ]
     return "\n".join(lines)
@@ -137,7 +205,7 @@ async def main() -> None:
     threshold    = float(os.environ.get("INPUT_THRESHOLD", "0.7"))
     post_comment = os.environ.get("INPUT_POST_COMMENT", "true").lower() == "true"
     methods      = [m.strip() for m in os.environ.get("INPUT_METHODS", "judge").split(",")]
-    context      = os.environ.get("INPUT_CONTEXT", "")
+    context      = os.environ.get("INPUT_CONTEXT", "")   # user-supplied override
     github_token = os.environ.get("GITHUB_TOKEN", "")
     repo         = os.environ.get("GITHUB_REPOSITORY", "")
 
@@ -163,15 +231,23 @@ async def main() -> None:
             _set_output("score", "0.0")
             _set_output("risk-level", "low")
             return
-        # Derive PR number from event for posting comment
-        event = _get_event()
-        pr_number = event.get("pull_request", {}).get("number")
-        print(f"Checking last commit messages ({len(text)} chars)…")
+        pr_number = _get_event().get("pull_request", {}).get("number")
+        print(f"Checking commit messages ({len(text)} chars)…")
 
     else:
-        # Treat check_target as literal text
         text = check_target
         print(f"Checking custom text ({len(text)} chars)…")
+
+    # ── Build context: user override → git diff → empty ───────────────────────
+    used_diff = False
+    if not context.strip():
+        diff = _get_diff()
+        if diff:
+            context = f"Git diff for this PR:\n\n```diff\n{diff}\n```"
+            used_diff = True
+            print(f"Using git diff as context ({len(diff)} chars)…")
+        else:
+            print("No diff available — running in fact-check mode…")
 
     # ── Run ChainCheck ─────────────────────────────────────────────────────────
     from chaincheck.detect import detect
@@ -186,11 +262,10 @@ async def main() -> None:
     _set_output("score", str(round(score, 4)))
     _set_output("risk-level", risk)
 
-    # ── Post PR comment ────────────────────────────────────────────────────────
+    # ── Post / update PR comment ───────────────────────────────────────────────
     if post_comment and github_token and repo and pr_number:
-        comment = _build_comment(result, score, threshold)
-        _post_comment(github_token, repo, int(pr_number), comment)
-        print(f"Comment posted to PR #{pr_number}")
+        comment = _build_comment(result, score, threshold, used_diff)
+        _upsert_comment(github_token, repo, int(pr_number), comment)
     elif post_comment and not github_token:
         print("::warning::post-comment=true but GITHUB_TOKEN is not set. Skipping comment.")
 

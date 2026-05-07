@@ -42,6 +42,7 @@ runs:
   image: 'Dockerfile'
   env:
     OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+    GITHUB_TOKEN: ${{ github.token }}
     INPUT_CHECK: ${{ inputs.check }}
     INPUT_THRESHOLD: ${{ inputs.threshold }}
     INPUT_POST_COMMENT: ${{ inputs.post-comment }}

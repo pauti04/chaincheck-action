@@ -1,0 +1,49 @@
+name: 'ChainCheck — LLM Hallucination Detector'
+description: 'Detect hallucinations in AI-generated PR descriptions, commit messages, and code comments. Posts per-claim results as a PR comment.'
+author: 'pauti04'
+
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  openai-api-key:
+    description: 'OpenAI API key (required for judge and decompose)'
+    required: true
+  check:
+    description: 'What to check: "pr-description" (default), "commit-messages", or any custom string'
+    required: false
+    default: 'pr-description'
+  threshold:
+    description: 'Fail the action if hallucination score exceeds this value (0.0–1.0)'
+    required: false
+    default: '0.7'
+  post-comment:
+    description: 'Post results as a PR comment (true/false)'
+    required: false
+    default: 'true'
+  methods:
+    description: 'Comma-separated detection methods: nli, judge, or nli,judge'
+    required: false
+    default: 'judge'
+  context:
+    description: 'Optional reference context to check claims against (e.g. a linked spec or doc)'
+    required: false
+    default: ''
+
+outputs:
+  score:
+    description: 'Aggregate hallucination score (0.0–1.0)'
+  risk-level:
+    description: 'Risk level: low, medium, or high'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  env:
+    OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+    INPUT_CHECK: ${{ inputs.check }}
+    INPUT_THRESHOLD: ${{ inputs.threshold }}
+    INPUT_POST_COMMENT: ${{ inputs.post-comment }}
+    INPUT_METHODS: ${{ inputs.methods }}
+    INPUT_CONTEXT: ${{ inputs.context }}

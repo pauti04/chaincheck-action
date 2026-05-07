@@ -8,8 +8,21 @@ branding:
 
 inputs:
   openai-api-key:
-    description: 'OpenAI API key (required for judge and decompose)'
-    required: true
+    description: 'OpenAI API key. Required unless anthropic-api-key or ollama-base-url is set.'
+    required: false
+    default: ''
+  anthropic-api-key:
+    description: 'Anthropic API key. Use with model: claude-haiku-4-5-20251001 or similar.'
+    required: false
+    default: ''
+  ollama-base-url:
+    description: 'Ollama base URL for local inference, e.g. http://localhost:11434'
+    required: false
+    default: ''
+  model:
+    description: 'Judge model override (e.g. gpt-4o-mini, claude-haiku-4-5-20251001, ollama:llama3)'
+    required: false
+    default: ''
   check:
     description: 'What to check: "pr-description" (default), "commit-messages", or any custom string'
     required: false
@@ -42,6 +55,9 @@ runs:
   image: 'Dockerfile'
   env:
     OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+    ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+    OLLAMA_BASE_URL: ${{ inputs.ollama-base-url }}
+    JUDGE_MODEL: ${{ inputs.model }}
     INPUT_CHECK: ${{ inputs.check }}
     INPUT_THRESHOLD: ${{ inputs.threshold }}
     INPUT_POST_COMMENT: ${{ inputs.post-comment }}

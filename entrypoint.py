@@ -208,8 +208,25 @@ async def main() -> None:
     github_token = os.environ.get("GITHUB_TOKEN", "")
     repo         = os.environ.get("GITHUB_REPOSITORY", "")
 
-    if not openai_key:
-        _set_failed("openai-api-key is required but was not provided.")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    ollama_url    = os.environ.get("OLLAMA_BASE_URL", "")
+    judge_model   = os.environ.get("JUDGE_MODEL", "")
+
+    if not openai_key and not anthropic_key and not ollama_url:
+        _set_failed(
+            "No LLM provider configured. "
+            "Set one of: openai-api-key, anthropic-api-key, or ollama-base-url."
+        )
+
+    # ── Log provider ──────────────────────────────────────────────────────────
+    if judge_model:
+        print(f"Judge model override: {judge_model}")
+    elif openai_key:
+        print("Provider: OpenAI (gpt-4o-mini default)")
+    elif anthropic_key:
+        print("Provider: Anthropic (claude-haiku-4-5-20251001 default)")
+    elif ollama_url:
+        print(f"Provider: Ollama ({ollama_url})")
 
     # ── Resolve text to check ──────────────────────────────────────────────────
     pr_number: int | None = None

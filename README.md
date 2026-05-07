@@ -55,12 +55,17 @@ jobs:
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `openai-api-key` | ✅ | — | OpenAI API key for the judge model |
-| `check` | | `pr-description` | What to check: `pr-description`, `commit-messages`, or any custom string |
-| `threshold` | | `0.7` | Fail if hallucination score ≥ this value (0.0–1.0) |
-| `post-comment` | | `true` | Post results as a PR comment |
-| `methods` | | `judge` | Detection methods: `nli`, `judge`, or `nli,judge` |
-| `context` | | `""` | Optional reference doc to check claims against |
+| `openai-api-key` | ✦ | — | OpenAI API key. Required unless `anthropic-api-key` or `ollama-base-url` is set. |
+| `anthropic-api-key` | ✦ | — | Anthropic API key (alternative to OpenAI). |
+| `ollama-base-url` | ✦ | — | Ollama base URL for local inference, e.g. `http://localhost:11434`. |
+| `model` | | auto | Judge model override, e.g. `gpt-4o-mini`, `claude-haiku-4-5-20251001`, `ollama:llama3`. |
+| `check` | | `pr-description` | What to check: `pr-description`, `commit-messages`, or any custom string. |
+| `threshold` | | `0.7` | Fail if hallucination score ≥ this value (0.0–1.0). |
+| `post-comment` | | `true` | Post results as a PR comment. |
+| `methods` | | `judge` | Detection methods: `nli`, `judge`, or `nli,judge`. |
+| `context` | | `""` | Optional reference doc to check claims against. |
+
+✦ At least one of `openai-api-key`, `anthropic-api-key`, or `ollama-base-url` is required.
 
 ## Outputs
 
@@ -119,6 +124,26 @@ jobs:
 
 - name: Print score
   run: echo "Score=${{ steps.chaincheck.outputs.score }} Risk=${{ steps.chaincheck.outputs.risk-level }}"
+```
+
+**Use Anthropic Claude instead of OpenAI:**
+```yaml
+- uses: pauti04/chaincheck-action@v1.4
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  with:
+    anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+    model: 'claude-haiku-4-5-20251001'
+```
+
+**Use a local Ollama model (self-hosted, no API costs):**
+```yaml
+- uses: pauti04/chaincheck-action@v1.4
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  with:
+    ollama-base-url: 'http://your-ollama-host:11434'
+    model: 'ollama:llama3'
 ```
 
 **Soft mode — comment only, never fail:**

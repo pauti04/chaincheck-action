@@ -40,12 +40,14 @@ jobs:
       pull-requests: write   # needed to post the comment
 
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: pauti04/chaincheck-action@v1
+      - uses: pauti04/chaincheck-action@v1.4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # enables diff context
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
 ```
+
+> No `actions/checkout` step needed — the action fetches the PR diff directly from the GitHub API.
 
 ---
 
@@ -73,7 +75,9 @@ jobs:
 
 **Check PR description (default):**
 ```yaml
-- uses: pauti04/chaincheck-action@v1
+- uses: pauti04/chaincheck-action@v1.4
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   with:
     openai-api-key: ${{ secrets.OPENAI_API_KEY }}
     threshold: '0.7'
@@ -86,7 +90,7 @@ jobs:
   with:
     fetch-depth: 10
 
-- uses: pauti04/chaincheck-action@v1
+- uses: pauti04/chaincheck-action@v1.4
   with:
     openai-api-key: ${{ secrets.OPENAI_API_KEY }}
     check: commit-messages
@@ -95,7 +99,9 @@ jobs:
 
 **NLI + judge ensemble (higher accuracy, slower):**
 ```yaml
-- uses: pauti04/chaincheck-action@v1
+- uses: pauti04/chaincheck-action@v1.4
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   with:
     openai-api-key: ${{ secrets.OPENAI_API_KEY }}
     methods: 'nli,judge'
@@ -105,7 +111,9 @@ jobs:
 **Use score in downstream steps:**
 ```yaml
 - id: chaincheck
-  uses: pauti04/chaincheck-action@v1
+  uses: pauti04/chaincheck-action@v1.4
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   with:
     openai-api-key: ${{ secrets.OPENAI_API_KEY }}
 
@@ -115,7 +123,9 @@ jobs:
 
 **Soft mode — comment only, never fail:**
 ```yaml
-- uses: pauti04/chaincheck-action@v1
+- uses: pauti04/chaincheck-action@v1.4
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   with:
     openai-api-key: ${{ secrets.OPENAI_API_KEY }}
     threshold: '1.1'   # effectively disables failing
@@ -127,10 +137,11 @@ jobs:
 ## How it works
 
 1. Reads the PR description (or commit messages) from the GitHub event payload
-2. Decomposes text into atomic claims using `gpt-4o-mini`
-3. Verifies each claim with the selected method (NLI cross-encoder and/or LLM judge)
-4. Posts a markdown table to the PR with per-claim verdicts
-5. Exits non-zero if `aggregate_score ≥ threshold`
+2. **Fetches the PR diff via the GitHub API** and uses it as grounding context for claim verification — no `actions/checkout` required
+3. Decomposes text into atomic claims using `gpt-4o-mini`
+4. Verifies each claim with the selected method (NLI cross-encoder and/or LLM judge)
+5. **Upserts a single PR comment** — edits the previous ChainCheck comment on re-runs instead of posting a new one each push
+6. Exits non-zero if `aggregate_score ≥ threshold`
 
 Powered by [ChainCheck](https://github.com/pauti04/chaincheck) — achieves **79% F1 / 94% precision** on HaluEval-QA.
 

@@ -1,0 +1,27 @@
+name: Test Action
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ChainCheck on custom text (no API key needed — skips gracefully)
+        id: chaincheck
+        uses: ./
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          check: "The Eiffel Tower was built in 1887 and is located in Lyon, France."
+          threshold: '0.9'
+          post-comment: 'false'
+        continue-on-error: true   # don't fail CI if no OPENAI_API_KEY secret set
+
+      - name: Print outputs
+        run: |
+          echo "Score: ${{ steps.chaincheck.outputs.score }}"
+          echo "Risk:  ${{ steps.chaincheck.outputs.risk-level }}"

@@ -20,7 +20,6 @@ import os
 import subprocess
 import sys
 import urllib.request
-import urllib.parse
 
 _COMMENT_TAG = "<!-- chaincheck-action -->"  # hidden tag to find and update our comment
 
@@ -57,38 +56,38 @@ def _get_commit_messages(n: int = 10) -> tuple[str, None]:
         return "", None
 
 
-def _get_diff(max_chars: int = 6000) -> str:
+def _get_diff_from_api(token: str, repo: str, pr_number: int, max_chars: int = 6000) -> str:
     """
-    Return the git diff for this PR branch vs the base branch.
+    Fetch PR file patches from the GitHub API.
 
-    Truncated to max_chars to stay within judge token limits.
-    Strips binary file hunks and large generated files.
+    More reliable than git diff inside a Docker container since it doesn't
+    depend on git remote config or network access to the origin.
+    Skips lockfiles, minified JS, SVGs, and binary files.
     """
-    base = os.environ.get("GITHUB_BASE_REF", "main")
-    try:
-        diff = subprocess.check_output(
-            ["git", "diff", f"origin/{base}...HEAD",
-             "--diff-filter=ACMR",         # ignore deletes/renames
-             "--",
-             ":(exclude)*.lock",           # skip lockfiles
-             ":(exclude)*.min.js",
-             ":(exclude)dist/",
-             ":(exclude)*.svg",
-            ],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception:
+    _SKIP_EXTS = {".lock", ".min.js", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".woff", ".woff2"}
+    _SKIP_DIRS = {"dist/", "build/", "node_modules/"}
+
+    files = _github_api(token, "GET",
+                        f"/repos/{repo}/pulls/{pr_number}/files?per_page=100")
+    if not isinstance(files, list):
         return ""
 
-    # Strip binary hunks
-    lines = [l for l in diff.splitlines() if not l.startswith("Binary files")]
-    trimmed = "\n".join(lines)
+    parts: list[str] = []
+    for f in files:
+        name  = f.get("filename", "")
+        patch = f.get("patch", "")
+        if not patch:
+            continue
+        if any(name.endswith(ext) for ext in _SKIP_EXTS):
+            continue
+        if any(name.startswith(d) for d in _SKIP_DIRS):
+            continue
+        parts.append(f"### {name}\n```diff\n{patch}\n```")
 
-    if len(trimmed) > max_chars:
-        trimmed = trimmed[:max_chars] + "\n\n[diff truncated]"
-
-    return trimmed
+    diff = "\n\n".join(parts)
+    if len(diff) > max_chars:
+        diff = diff[:max_chars] + "\n\n[diff truncated]"
+    return diff
 
 
 def _github_api(token: str, method: str, path: str, body: dict | None = None) -> dict | list | None:
@@ -238,16 +237,18 @@ async def main() -> None:
         text = check_target
         print(f"Checking custom text ({len(text)} chars)…")
 
-    # ── Build context: user override → git diff → empty ───────────────────────
+    # ── Build context: user override → PR diff (API) → empty ─────────────────
     used_diff = False
-    if not context.strip():
-        diff = _get_diff()
+    if not context.strip() and github_token and repo and pr_number:
+        diff = _get_diff_from_api(github_token, repo, int(pr_number))
         if diff:
-            context = f"Git diff for this PR:\n\n```diff\n{diff}\n```"
+            context = f"Changes in this PR:\n\n{diff}"
             used_diff = True
-            print(f"Using git diff as context ({len(diff)} chars)…")
+            print(f"Using PR diff as context ({len(diff)} chars)…")
         else:
             print("No diff available — running in fact-check mode…")
+    elif not context.strip():
+        print("No token/repo/PR — running in fact-check mode…")
 
     # ── Run ChainCheck ─────────────────────────────────────────────────────────
     from chaincheck.detect import detect
